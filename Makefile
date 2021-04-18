@@ -1,5 +1,5 @@
 CC := gcc
-FLAGS := -g -fsanitize=thread -Wall -Werror -std=c11
+FLAGS := -MP -MD -g -fsanitize=thread -Wall -Werror -std=c11
 LIBS := -pthread -lm
 
 SOURCEDIR := src/code
@@ -8,6 +8,7 @@ BUILDDIR := build
 EXECUTABLE := compare
 SOURCES:= $(wildcard $(SOURCEDIR)/*.c)
 OBJECTS := $(patsubst $(SOURCEDIR)/%.c,$(BUILDDIR)/%.o,$(SOURCES))
+-include $(SOURCES:.c=.d)
 
 all: dir $(BUILDDIR)/$(EXECUTABLE)
 
