@@ -3,6 +3,7 @@
 
 #include <pthread.h>
 #include <stdlib.h>
+#include "compare.h"
 
 typedef struct wfdNode {
 	int occurrences;
@@ -31,12 +32,14 @@ wfd_t* wfd_init(char *file);
 
 wfdLL_t*  wfdLL_init();
 
-void add_wfdNode(wfd_t* wfd, char *word);
+wfdNode_t* add_wfdNode(wfd_t* wfd, char *word);
 
 void insert_wfd(wfdLL_t *wfdLinkedList, wfd_t *wfd);
 
 void calculate_freq(wfd_t *wfd);
 
+void free_wfdNode(wfdNode_t *wfdNode);
+void free_wfd(wfd_t *wfd);
 void free_wfdLL(wfdLL_t *wfdLinkedList);
 
 #endif //P2_LLNODE_H

@@ -2,7 +2,7 @@
 #define P2_NODE_H
 
 typedef struct node {
-	void* data;
+	char* data;
 	struct node *next;
 } node_t;
 

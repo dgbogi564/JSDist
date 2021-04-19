@@ -28,24 +28,51 @@ wfdLL_t*  wfdLL_init() {
 	return wfdLinkedList;
 }
 
-void add_wfdNode(wfd_t* wfd, char *word) {
-	wfdNode_t *wfdNode = wfd->head;
-	if(wfdNode == NULL) wfd->head = wfdNode_init(word);
-	else {
-		while(wfdNode->next != NULL) wfdNode = wfdNode->next;
-		wfdNode->next = wfdNode_init(word);
+wfdNode_t* add_wfdNode(wfd_t* wfd, char *word) {
+	wfdNode_t *wfdNode = NULL;
+
+	if(wfd->head == NULL) {
+		wfd->head = wfdNode_init(word);
+		wfd->size = 1;
+		wfdNode = wfd->head;
+	} else {
+		int ret;
+		wfdNode_t *prev = NULL;
+		wfdNode = wfd->head;
+		while(wfdNode != NULL && 0 < (ret = strcmp(word, wfdNode->word))) {
+			prev = wfdNode;
+			wfdNode = wfdNode->next;
+		}
+
+		if(ret) {
+			if(prev == NULL) {
+				prev = wfdNode;
+				wfd->head = wfdNode = wfdNode_init(word);
+				wfd->head->next = prev;
+			} else {
+				prev = prev->next = wfdNode_init(word);
+				prev->next = wfdNode;
+				wfdNode = prev;
+			}
+		} else {
+			++wfdNode->occurrences;
+			wfdNode = NULL;
+		}
 	}
-	++wfd->size;
+
+	++wfd->total_occurrences;
+	return wfdNode;
 }
 
 void insert_wfd(wfdLL_t *wfdLinkedList, wfd_t *wfd) {
 	hpthread_mutex_lock(&lock);
+	wfd_t *wfdTemp;
 
-	wfd_t *wfd2 = wfdLinkedList->head;
-	if(wfd2->head == NULL) wfdLinkedList->head = wfd;
-	else {
-		while(wfd2->next != NULL) wfd2 = wfd2->next;
-		wfd2->next = wfd;
+	if((wfdTemp = wfdLinkedList->head) == NULL) {
+		wfdLinkedList->head = wfd;
+	} else {
+		while(wfdTemp->next != NULL) wfdTemp = wfdTemp->next;
+		wfdTemp->next = wfd;
 	}
 	++wfdLinkedList->size;
 
@@ -56,27 +83,30 @@ void calculate_freq(wfd_t *wfd) {
 	wfdNode_t *wfdNode = wfd->head;
 	while(wfdNode != NULL) {
 		wfdNode->freq = (double)wfdNode->occurrences/(double)wfd->total_occurrences;
+		if(DEBUG) printf("%-18s %-18d %lf\n", wfdNode->word, wfdNode->occurrences, wfdNode->freq);
 		wfdNode = wfdNode->next;
 	}
 }
 
+void free_wfdNode(wfdNode_t *wfdNode) {
+	wfdNode_t *temp;
+	while(wfdNode != NULL) {
+		temp = wfdNode->next;
+		free(wfdNode->word);
+		free(wfdNode);
+		wfdNode = temp;
+	}
+}
+void free_wfd(wfd_t *wfd) {
+	free_wfdNode(wfd->head);
+	free(wfd);
+}
 void free_wfdLL(wfdLL_t *wfdLinkedList) {
 	hpthread_mutex_lock(&lock);
-
-	wfd_t *wfd = wfdLinkedList->head, *temp;
-	wfdNode_t *wfdNode, *temp2;
-
+	wfd_t *wfd = wfdLinkedList->head;
 	while(wfd != NULL) {
-		while(wfdNode != NULL) {
-			temp2 = wfdNode->next;
-			free(wfdNode->word);
-			free(wfdNode);
-			wfdNode = temp2;
-		}
-		temp = wfd->next;
-		free(wfd);
-		wfd = temp;
+		free_wfd(wfd);
+		wfd = wfd->next;
 	}
-
 	hpthread_mutex_unlock(&lock);
 }

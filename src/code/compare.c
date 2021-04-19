@@ -1,3 +1,5 @@
+#include "compare.h"
+
 #include <stdio.h>
 
 #include <sys/stat.h>
@@ -5,25 +7,24 @@
 #include "args.h"
 #include "errorh.h"
 
-#ifndef BUFSIZE
-#define BUFSIZE 256
-#endif
-
 
 #include <dirent.h>
 void* searchDIR(void *arg) {
+	if(DEBUG) setbuf(stdout, NULL);
+
 	args_t *args = arg;
 	queue_t *fileq = args->fileq, *dirq = args->dirq;
 
 	int *FILE_ERROR = hmalloc(sizeof(int)), ret;
 	*FILE_ERROR = 0;
-	char *ext = args->ext;
-	char *path, *name, *fpath, *needle;     // As in a needle in a haystack.
+
+	char *ext = args->ext, *path, *name, *fpath, *needle;     // As in a needle in a haystack.
 	struct dirent *entry;
 	struct stat info;
 	DIR *dir;
 
-	int firstSwitch = 1;
+	struct timespec max_wait = {0, 0};
+
 	do {
 		hpthread_mutex_lock(&dirq->lock);
 		++dirq->num_working;
@@ -32,46 +33,55 @@ void* searchDIR(void *arg) {
 		while(dirq->size > 0) {
 			path = dequeue(dirq);
 			if(path == NULL) continue;
+			dir = hopendir(path, FILE_ERROR);
 
-
-			if((dir = opendir(path)) == NULL) {
-				*FILE_ERROR = 1;
-				continue;
-			}
-			errno = 0;
-			while((entry = readdir(dir)) == NULL) {
+			while((entry = hreaddir(dir, FILE_ERROR)) != NULL) {
 				if(!strcmp((name = entry->d_name), ".") || !strcmp(name, "..")) continue;
 
 				fpath = hmalloc(sizeof(char)*(strlen(path)+strlen(name)+2));
 				sprintf(fpath, "%s/%s", path, name);
 
-				*FILE_ERROR = hstat(fpath, &info);
+				if((*FILE_ERROR = hstat(fpath, &info))) continue;
 				if(!(ret = isTYPE(info))) {                                 // Is File.
 					needle = hmalloc(sizeof(char)*(strlen(ext)+2));
 					if(sprintf(needle, ".%s", ext) < 0) {
 						perror("sprintf");
 						exit(EXIT_FAILURE);
-					}
+					} // REMINDER: look into how to create an error function for sprintf.
 
 					if(  (ext[0] == '\0' && (name = strstr(name, needle)) == NULL) ||
 						(name != NULL && name[strlen(ext)+1 == '\0'])) {
 						enqueue(fileq, fpath);
-						pthread_mutex_lock(&fileq->lock);
-						hpthread_cond_broadcast(&fileq->write_ready);
-						pthread_mutex_unlock(&fileq->lock);
+						if(DEBUG) printf("%-10s %s\n","enqueue:", fpath);
 					}
+				} else if(name != NULL && name[strlen(ext+1)] == '\0') {
+					hpthread_mutex_lock(&fileq->lock);
+					enqueue(fileq, fpath);
+					hpthread_mutex_unlock(&fileq->lock);
 				} else if(ret == 1) enqueue(dirq, fpath);                   // Is Directory.
 
-				free(fpath);
+				fpath = NULL;
 			}
-			if(entry == NULL && errno) perror("readdir");
 		}
 
-		if(firstSwitch && fileq->size > 0) {
+		hpthread_mutex_lock(&dirq->lock);
+		--dirq->num_working;
+		hpthread_mutex_unlock(&dirq->lock);
+
+		while(dirq->num_working > 0) {
+			hclock_gettime(CLOCK_REALTIME, &max_wait);
+			max_wait.tv_sec += MAX_WAIT_TIME_IN_SECONDS;
+			max_wait.tv_nsec += MAX_WAIT_TIME_IN_NANOSECONDS;
+
 			hpthread_mutex_lock(&dirq->lock);
-			--dirq->num_working;
+
+			hpthread_cond_broadcast(&dirq->write_ready);
+			hpthread_cond_timedwait(&dirq->write_ready, &dirq->lock, &max_wait);
+			hpthread_cond_broadcast(&dirq->write_ready);
+
 			hpthread_mutex_unlock(&dirq->lock);
-			firstSwitch = 0;
+
+			if(dirq->size > 0) ++dirq->num_working;
 		}
 	} while(dirq->num_working > 0);
 
@@ -80,176 +90,165 @@ void* searchDIR(void *arg) {
 
 #include <fcntl.h>
 void* findWFD(void *arg) {
+	if(DEBUG) setbuf(stdout, NULL);
+
 	args_t *args = arg;
 
 	queue_t *dirq = args->dirq, *fileq = args->fileq;
 	wfdLL_t *wfd_repo = args->wfd_repo;
 	wfd_t *wfd;
-	int ret, *retval = malloc(sizeof(int));
-	int i, j, fd, offset;
-	char buf[BUFSIZE] = "", temp[BUFSIZE] = "", *path;
-	char *word = NULL, *hold = NULL;
+	int i, fd, offset = 0;
+	int ret, *retval = hmalloc(sizeof(int));
+	char buf[BUFSIZE] = "", parsed[BUFSIZE] = "", *word = "", *hold, *path;
 
-	int ID = ++fileq->num_threads;
-
+	hpthread_mutex_lock(&fileq->lock);
+	fileq->num_working++;
+	hpthread_mutex_unlock(&fileq->lock);
 	do {
 		while(fileq->size > 0) {
 			hpthread_mutex_lock(&fileq->lock);
-			fileq->num_working++;
 			path = dequeue(fileq);
 			hpthread_mutex_unlock(&fileq->lock);
 			if(path == NULL) continue;
 
 			fd = open(path, O_RDONLY);
 			wfd = wfd_init(path);
+			hpthread_mutex_lock(&wfd_repo->lock);
 			insert_wfd(wfd_repo, wfd);
+			hpthread_mutex_unlock(&wfd_repo->lock);
 
-			offset = 0;
-			j = 0;
-			while((ret = (int)read(fd, buf, BUFSIZE))) {
-				if(ret < 0) {
-					perror("read");
+			if(DEBUG) {
+				char *separator = "=================================================================";
+				printf(   "\nFILE: %s\n"
+		                    "%-18s %-18s %-18s\n%.*s\n", path, "word", "count", "freq", 50, separator);
+			}
+
+			while((ret = hread(fd, buf, BUFSIZE))) {
+				if(ret == -1) {
 					*retval = 1;
+					continue;
 				}
 
 				for(i = 0; i < BUFSIZE; ++i) {
-					if(  ('a' <= buf[i] &&
-						'z' >= buf[i]) ||
-				          '-' == buf[i])
-					{
-						temp[j-offset] = buf[i];
-						temp[(j-offset)+1] = '\0';
-					} else if(  'A' <= buf[i] &&
-					            'Z' >= buf[i])
-					{
-						temp[j-offset] = (char)(buf[i]+32);
-						temp[(j-offset)+1] = '\0';
-					} else if(  ' ' == buf[i] ||
-					            '\n' == buf[i])
-					{
-						if(word != NULL) {
-							hold = word;
-							word = hmalloc(sizeof(char)*(strlen(hold)+strlen(temp)+1));
-							sprintf(word, "%s%s", hold, temp);
-							strcat(word, hold);
-							strcat(word, temp);
-							free(hold);
-							hold = NULL;
-						} else {
-							word = hmalloc(sizeof(char)*(strlen(temp)+1));
-							sprintf(word, "%s", temp);
-						}
+					if(('a' <= buf[i] && 'z' >= buf[i]) || '-' == buf[i]) {
+						parsed[i-offset] = buf[i];
+						parsed[(i-offset)+1] = '\0';
+					} else if('A' <= buf[i] && 'Z' >= buf[i]) {
+						parsed[i-offset] = (char)(buf[i]+32);
+						parsed[(i-offset)+1] = '\0';
+					} else if(' ' == buf[i] || '\n' == buf[i]) {
+						if(parsed[0] == '\0') continue;
 
+						hold = word;
+						word = hmalloc(sizeof(char)*(strlen(parsed)+strlen(hold)+1));
+						sprintf(word, "%s%s", hold, parsed);
 						add_wfdNode(wfd, word);
-						temp[0] = '\0';
-						word = NULL;
-						j = -1;        // Will be 0 on next loop.
-						offset = 0;
-					} else offset++;
-					j++;
-				}
-				if(temp[0] == '\0') continue;
-				if(word != NULL) {
-					hold = word;
-					word = hmalloc(sizeof(char)*(strlen(hold)+strlen(temp)+1));
-					sprintf(word, "%s%s", hold, temp);
-					hold = NULL;
-				} else {
-					word = hmalloc(sizeof(char)*(strlen(temp)+1));
-					sprintf(word, "%s", temp);
-				}
 
-				temp[0] = '\0';
+						offset = i+1;
+						parsed[0] = '\0', word = "";
+					} else ++offset;
+				}
+				offset = 0;
+				if(parsed[0] == '\0') continue;
+
+				hold = word;
+				word = hmalloc(sizeof(char)*(strlen(parsed)+strlen(hold)+1));
+				sprintf(word, "%s%s", hold, parsed);
+				parsed[0] = '\0';
 			}
-
+			if(word[0] != '\0') add_wfdNode(wfd, word);
+			word = "";
 			calculate_freq(wfd);
-		}
 
-		hpthread_mutex_lock(&fileq->lock);
-		if(dirq->num_working <= 0) fileq->num_working--;
-		else pthread_cond_wait(&fileq->write_ready, &fileq->lock);
-		hpthread_mutex_unlock(&fileq->lock);
-	} while(dirq->num_working > 0);
+			if(DEBUG) puts("");
+		}
+	} while (dirq->num_working || fileq->size > 0);
+
+	hpthread_mutex_lock(&fileq->lock);
+	--fileq->num_working;
+	hpthread_mutex_unlock(&fileq->lock);
 
 	return (void *)retval;
 }
 
 #include "wfd.h"
-wfdNode_t* mean_wfd(wfdNode_t *node1, wfdNode_t *node2) {
-	int ret;
-	wfdNode_t *mean;
 
-	if(node1 != NULL && node2 != NULL) ret = strcmp(node1->word, node2->word);
-	if(node2 == NULL || ret > 0) {
-		mean = wfdNode_init(node1->word);
-		mean->freq = 0.5*(node1->freq);
+wfdNode_t* mean_wfd(wfdNode_t *wfdn1, wfdNode_t *wfdn2) {
+	wfd_t *mean = wfd_init("mean");
+	wfdNode_t *wfdNode;
 
-		node1 = node1->next;
-	} else if(node1 == NULL || ret < 0) {
-		mean = wfdNode_init(node2->word);
-		mean->freq = 0.5*(node2->freq);
-
-		node2 = node2->next;
-	} else {
-		mean = wfdNode_init(node1->word);
-		mean->freq = 0.5*(node1->freq + node2->freq);
-
-		node1 = node1->next;
-		node2 = node2->next;
-	}
-
-	wfdNode_t *temp = mean;
-	while(node1 != NULL || node2 != NULL) {
-		if(node1 != NULL && node2 != NULL) {
-			ret = strcmp(node1->word, node2->word);
-			if(ret > 0) {
-				temp->next = wfdNode_init(node1->word);
-				temp = temp->next;
-				temp->freq = 0.5*(node1->freq);
-
-				node1 = node1->next;
-			} else if(ret < 0) {
-				temp->next = wfdNode_init(node2->word);
-				temp = temp->next;
-				temp->freq = 0.5*(node2->freq);
-
-				node2 = node2->next;
-			} else {
-				temp->next = wfdNode_init(node1->word);
-				temp = temp->next;
-				temp->freq = 0.5*(node1->freq + node2->freq);
-
-				node1 = node1->next;
-				node2 = node2->next;
-			}
+	while(wfdn1 != NULL || wfdn2 != NULL) {
+		if(wfdn1 == NULL) {                // wnfd1 is null.
+			  if(wfdn2 != NULL) {         // wfdn2 is not null.
+			  	add_wfdNode(mean, wfdn2->word)->freq = 0.5*wfdn2->freq;
+			  	wfdn2 = wfdn2->next;
+			  }
+		} else if(wfdn2 == NULL) {         // wfdn2 is null, but wfdn1 is not null.
+			add_wfdNode(mean, wfdn1->word)->freq = 0.5*wfdn1->freq;
+			wfdn1 = wfdn1->next;
 		}
+		else {                             // Both are not null.
+			int ret = strcmp(wfdn1->word, wfdn2->word);
+			if        (ret > 0) add_wfdNode(mean, wfdn1->word)->freq = 0.5*wfdn1->freq;
+			else if   (ret < 0) add_wfdNode(mean, wfdn1->word)->freq = 0.5*wfdn2->freq;
+			else                add_wfdNode(mean, wfdn1->word)->freq = 0.5*(wfdn1->freq+wfdn2->freq);
 
-		if(node1 != NULL && node2 == NULL) {
-			temp->next = wfdNode_init(node1->word);
-			temp = temp->next;
-			temp->freq = 0.5*(node1->freq);
-
-			node1 = node1->next;
-		} else if(node2 != NULL && node1 == NULL) {
-			temp->next = wfdNode_init(node2->word);
-			temp = temp->next;
-			temp->freq = 0.5*(node2->freq);
-
-			node2 = node2->next;
+			wfdn1 = wfdn1->next;
+			wfdn2 = wfdn2->next;
 		}
 	}
 
-	return mean;
+	wfdNode = mean->head;
+	mean->head = NULL;
+	free_wfd(mean);
+
+	return wfdNode;
 }
+
+#include <math.h>
 double findKLD(wfdNode_t *mean, wfdNode_t *wfdNode) {
+	double KLD = 0;
 
+	while(wfdNode != NULL) {
+		// Don't have to check for strcmp > 0 because mean contains every entry in wfdNode.
+		if(strcmp(wfdNode->word, mean->word) < 0) wfdNode = wfdNode->next;
+		else {
+			KLD += 0.5*log2(wfdNode->freq/mean->freq);
+			wfdNode = wfdNode->next;
+			mean = mean->next;
+		}
+	}
+
+	return KLD;
 }
+
 void* findJSD(void *arg) {
 	args_t *args = arg;
-	wfdLL_t *wfd_repo = args->wfd_repo;
-	linkedList_t *jsd_repo = args->jsd_repo;
+	hpthread_mutex_lock(&args->lock);
+	int ID = args->thread_id;
+	hpthread_mutex_unlock(&args->lock);
 
-	int ID = --args->thread_id;
+	double JSD;
+
+	wfdLL_t *wfd_repo = args->wfd_repo;
+	wfd_t *wfd1 = wfd_repo->head, *wfd2;
+
+	setbuf(stdout, NULL);
+	int i, j;
+	for(i = 0; i < wfd_repo->size && wfd1 != NULL; ++i) {
+		if(ID == i%args->a) {
+			wfd2 = wfd1->next;
+			for(j = i; j < wfd_repo->size && wfd2 != NULL; ++i) {
+				wfdNode_t *mean = mean_wfd(wfd1->head, wfd2->head);
+
+				JSD = sqrt(0.5*findKLD(mean, wfd1->head)+0.5* findKLD(mean, wfd2->head));
+				printf("%lf %s %s", JSD, wfd1->file, wfd2->file);
+
+				wfd2 = wfd2->next;
+			}
+		}
+		wfd1 = wfd1->next;
+	}
 }
 
 void usage() {
@@ -299,7 +298,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	// Parse optional parameters.
-	for(; i< argc; ++i) {
+	for(; i < argc; ++i) {
 		if(argv[i][0] != '-') {
 			fprintf(stderr, "Incorrect syntax.\n");
 			free(args), free_queue(dirq), free_queue(fileq);
@@ -317,44 +316,47 @@ int main(int argc, char *argv[]) {
 				case 'f': f = num; break;
 				case 'a': a = num; break;
 				default : {
-					fprintf(stderr, "Incorrrect syntax.\n");
+					fprintf(stderr, "Incorrect syntax.\n");
 					exit(EXIT_FAILURE);
 				}
 			}
 		}
 	}
 
-	dirq->num_threads = d;
-	fileq->num_threads = f;
-
+	args->d = d, args->f = f, args->a = a;
 	pthread_t dTID[d], fTID[f], aTID[a];
 	args->wfd_repo = wfdLL_init();
 
 	// Recursively search directories for files of given extension type and add to queue.
-	args->thread_id = 0;
 	for(i = 0; i < d; ++i) hpthread_create(&dTID[i], NULL, (void *) searchDIR, (void *)args);
 
 	// Calculate the word frequencies distribution (WFD) of all files.
-	args->thread_id = 0;
 	for(i = 0; i < f; ++i) hpthread_create(&fTID[i], NULL, (void *)findWFD, (void *)args);
 
 	// Wait for directory and file threads to finish before continuing to the next section.
 	for(i = 0; i < d; ++i) hpthread_join(dTID[i], (void **)&ptr);
-	if(*ptr) FILE_ERROR = 1;
-	free(ptr);
+	if(d && ptr != NULL) {
+		if(*ptr) FILE_ERROR = 1;
+		free(ptr);
+	}
 
 	for(i = 0; i < f; ++i) hpthread_join(fTID[i], (void **)&ptr);
-	if(*ptr) FILE_ERROR = 1;
-	free(ptr);
+	if(f && ptr != NULL) {
+		if(*ptr) FILE_ERROR = 1;
+		free(ptr);
+	}
 
 	// Calculate the Jenson-Shannon distance (JSD) of all file pairs.
-	args->thread_id = 0;
-	for(i = 0; i < a; ++i) hpthread_create(&aTID[i], NULL, (void *)findJSD, (void *)args);
+	for(i = 0; i < a; ++i) {
+		args->thread_id = i;
+		hpthread_create(&aTID[i], NULL, (void *)findJSD, (void *)args);
+	}
+
 	// Wait for the Jenson-Shannon distance JSD threads to finish.
 	for(i = 0; i < a; ++i) hpthread_join(aTID[i], NULL);
 
 	// Free Allocations and End Program.
-	free(args),free_queue(dirq), free_queue(fileq), free_wfdLL(args->wfd_repo), free(args->jsd_repo);
+	free_queue(dirq), free_queue(fileq), free_wfdLL(args->wfd_repo), free(args);
 	if(FILE_ERROR) exit(EXIT_FAILURE);
 	return EXIT_SUCCESS;
 }
