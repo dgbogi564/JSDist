@@ -13,7 +13,7 @@ queue_t* queue_init() {
 	return queue;
 }
 
-void enqueue(queue_t *queue, void *data) {
+void enqueue(queue_t *queue, char *data) {
 	node_t *node = node_init(data);
 	hpthread_mutex_lock(&lock);
 
@@ -28,11 +28,14 @@ void enqueue(queue_t *queue, void *data) {
 
 
 void* dequeue(queue_t *queue) {
-	if(queue->head == NULL) return NULL;
 	hpthread_mutex_lock(&lock);
+	if(queue->head == NULL) {
+		hpthread_mutex_unlock(&lock);
+		return NULL;
+	}
 
 	node_t *node = queue->head;
-	void *data = node->data;
+	char *data = node->data;
 	queue->head = queue->head->next;
 	if(queue->head == queue->rear) queue->rear = NULL;
 	--queue->size;

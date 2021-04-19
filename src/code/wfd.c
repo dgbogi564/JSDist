@@ -40,12 +40,13 @@ void add_wfdNode(wfd_t* wfd, char *word) {
 
 void insert_wfd(wfdLL_t *wfdLinkedList, wfd_t *wfd) {
 	hpthread_mutex_lock(&lock);
+	wfd_t *wfdTemp;
 
-	wfd_t *wfd2 = wfdLinkedList->head;
-	if(wfd2->head == NULL) wfdLinkedList->head = wfd;
-	else {
-		while(wfd2->next != NULL) wfd2 = wfd2->next;
-		wfd2->next = wfd;
+	if((wfdTemp = wfdLinkedList->head) == NULL) {
+		wfdLinkedList->head = wfd;
+	} else {
+		while(wfdTemp->next != NULL) wfdTemp = wfdTemp->next;
+		wfdTemp->next = wfd;
 	}
 	++wfdLinkedList->size;
 

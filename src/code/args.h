@@ -2,7 +2,6 @@
 #define P2_ARGS_H
 
 #include "queue.h"
-#include "linkedlist.h"
 #include "wfd.h"
 
 typedef struct args {
@@ -10,7 +9,6 @@ typedef struct args {
 	int thread_id;
 	queue_t *dirq, *fileq;
 	wfdLL_t *wfd_repo;
-	linkedList_t* jsd_repo;
 } args_t;
 
 args_t* args_init();

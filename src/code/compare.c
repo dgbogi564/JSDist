@@ -9,21 +9,32 @@
 #define BUFSIZE 256
 #endif
 
+#ifndef DEBUG
+#define DEBUG 1
+#endif
+
 
 #include <dirent.h>
+#ifndef MAX_WAIT_TIME_IN_SECONDS
+#define MAX_WAIT_TIME_IN_SECONDS (5)
+#endif
 void* searchDIR(void *arg) {
+	if(DEBUG) setbuf(stdout, NULL);
+
 	args_t *args = arg;
 	queue_t *fileq = args->fileq, *dirq = args->dirq;
 
 	int *FILE_ERROR = hmalloc(sizeof(int)), ret;
 	*FILE_ERROR = 0;
+
 	char *ext = args->ext;
 	char *path, *name, *fpath, *needle;     // As in a needle in a haystack.
 	struct dirent *entry;
 	struct stat info;
 	DIR *dir;
 
-	int firstSwitch = 1;
+	struct timespec max_wait = {0, 0};
+
 	do {
 		hpthread_mutex_lock(&dirq->lock);
 		++dirq->num_working;
@@ -32,48 +43,60 @@ void* searchDIR(void *arg) {
 		while(dirq->size > 0) {
 			path = dequeue(dirq);
 			if(path == NULL) continue;
+			dir = hopendir(path, FILE_ERROR);
 
-
-			if((dir = opendir(path)) == NULL) {
-				*FILE_ERROR = 1;
-				continue;
-			}
-			errno = 0;
-			while((entry = readdir(dir)) == NULL) {
+			while((entry = hreaddir(dir, FILE_ERROR)) != NULL) {
 				if(!strcmp((name = entry->d_name), ".") || !strcmp(name, "..")) continue;
 
 				fpath = hmalloc(sizeof(char)*(strlen(path)+strlen(name)+2));
 				sprintf(fpath, "%s/%s", path, name);
 
-				*FILE_ERROR = hstat(fpath, &info);
+				if((*FILE_ERROR = hstat(fpath, &info))) continue;
 				if(!(ret = isTYPE(info))) {                                 // Is File.
 					needle = hmalloc(sizeof(char)*(strlen(ext)+2));
 					if(sprintf(needle, ".%s", ext) < 0) {
 						perror("sprintf");
 						exit(EXIT_FAILURE);
-					}
+					} // REMINDER: look into how to create an error function for sprintf.
 
 					if(  (ext[0] == '\0' && (name = strstr(name, needle)) == NULL) ||
 						(name != NULL && name[strlen(ext)+1 == '\0'])) {
 						enqueue(fileq, fpath);
-						pthread_mutex_lock(&fileq->lock);
+						if(DEBUG) printf("enqueue: %s\n", fpath);
+						hpthread_mutex_lock(&fileq->lock);
 						hpthread_cond_broadcast(&fileq->write_ready);
-						pthread_mutex_unlock(&fileq->lock);
+						hpthread_mutex_unlock(&fileq->lock);
 					}
+				} else if(name != NULL && name[strlen(ext+1)] == '\0') {
+					hpthread_mutex_lock(&fileq->lock);
+					enqueue(fileq, fpath);
+					hpthread_mutex_unlock(&fileq->lock);
 				} else if(ret == 1) enqueue(dirq, fpath);                   // Is Directory.
 
-				free(fpath);
+				fpath == NULL;
 			}
-			if(entry == NULL && errno) perror("readdir");
 		}
 
-		if(firstSwitch && fileq->size > 0) {
+		--dirq->num_working;
+		while(dirq->num_working > 0) {
 			hpthread_mutex_lock(&dirq->lock);
-			--dirq->num_working;
+
+			hpthread_cond_broadcast(&dirq->write_ready);
+
+			hclock_gettime(CLOCK_REALTIME, &max_wait);
+			max_wait.tv_sec += MAX_WAIT_TIME_IN_SECONDS;
+			hpthread_cond_timedwait(&dirq->write_ready, &dirq->lock, &max_wait);
+
+			hpthread_cond_broadcast(&dirq->write_ready);
+
 			hpthread_mutex_unlock(&dirq->lock);
-			firstSwitch = 0;
 		}
+		if(dirq->num_working > 0) ++dirq->num_working;
+
 	} while(dirq->num_working > 0);
+
+	pthread_cond_signal(&fileq->write_ready);
+	hpthread_mutex_unlock(&fileq->lock);
 
 	return (void *)FILE_ERROR;
 }
@@ -85,17 +108,17 @@ void* findWFD(void *arg) {
 	queue_t *dirq = args->dirq, *fileq = args->fileq;
 	wfdLL_t *wfd_repo = args->wfd_repo;
 	wfd_t *wfd;
-	int ret, *retval = malloc(sizeof(int));
 	int i, j, fd, offset;
+	int ret, *retval = malloc(sizeof(int));
 	char buf[BUFSIZE] = "", temp[BUFSIZE] = "", *path;
 	char *word = NULL, *hold = NULL;
 
-	int ID = ++fileq->num_threads;
-
+	hpthread_mutex_lock(&fileq->lock);
+	fileq->num_working++;
+	hpthread_mutex_unlock(&fileq->lock);
 	do {
 		while(fileq->size > 0) {
 			hpthread_mutex_lock(&fileq->lock);
-			fileq->num_working++;
 			path = dequeue(fileq);
 			hpthread_mutex_unlock(&fileq->lock);
 			if(path == NULL) continue;
@@ -104,18 +127,18 @@ void* findWFD(void *arg) {
 			wfd = wfd_init(path);
 			insert_wfd(wfd_repo, wfd);
 
-			offset = 0;
-			j = 0;
+			offset = j = 0;
 			while((ret = (int)read(fd, buf, BUFSIZE))) {
 				if(ret < 0) {
 					perror("read");
 					*retval = 1;
+					break;
 				}
 
 				for(i = 0; i < BUFSIZE; ++i) {
 					if(  ('a' <= buf[i] &&
-						'z' >= buf[i]) ||
-				          '-' == buf[i])
+					      'z' >= buf[i]) ||
+					     '-' == buf[i])
 					{
 						temp[j-offset] = buf[i];
 						temp[(j-offset)+1] = '\0';
@@ -164,13 +187,10 @@ void* findWFD(void *arg) {
 
 			calculate_freq(wfd);
 		}
+	} while (dirq->num_working);
 
-		hpthread_mutex_lock(&fileq->lock);
-		if(dirq->num_working <= 0) fileq->num_working--;
-		else pthread_cond_wait(&fileq->write_ready, &fileq->lock);
-		hpthread_mutex_unlock(&fileq->lock);
-	} while(dirq->num_working > 0);
 
+	--fileq->num_working;
 	return (void *)retval;
 }
 
@@ -241,16 +261,18 @@ wfdNode_t* mean_wfd(wfdNode_t *node1, wfdNode_t *node2) {
 
 	return mean;
 }
+/*
 double findKLD(wfdNode_t *mean, wfdNode_t *wfdNode) {
 
-}
+}*/
+/*
 void* findJSD(void *arg) {
 	args_t *args = arg;
-	wfdLL_t *wfd_repo = args->wfd_repo;
-	linkedList_t *jsd_repo = args->jsd_repo;
+	//wfdLL_t *wfd_repo = args->wfd_repo;
+	//linkedList_t *jsd_repo = args->jsd_repo;
 
-	int ID = --args->thread_id;
-}
+	//int ID = --args->thread_id;
+}*/
 
 void usage() {
 	printf(	"usage: compare {File ...|Directory...} [%c[1m-d%c[0mN] [%c[1m-f%c[0mN] [%c[1m-a%c[0mN] [%c[1m-s%c[0mS]\n"
@@ -282,7 +304,7 @@ int main(int argc, char *argv[]) {
 	// Default parameters.
 	int d = 1;
 	int f = 1;
-	int a = 1;
+	//TODO int a = 1;
 	args->ext = "txt";
 
 	int FILE_ERROR = 0, i, ret, *ptr;
@@ -299,7 +321,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	// Parse optional parameters.
-	for(; i< argc; ++i) {
+	for(; i < argc; ++i) {
 		if(argv[i][0] != '-') {
 			fprintf(stderr, "Incorrect syntax.\n");
 			free(args), free_queue(dirq), free_queue(fileq);
@@ -315,9 +337,9 @@ int main(int argc, char *argv[]) {
 			switch(argv[i][1]) {
 				case 'd': d = num; break;
 				case 'f': f = num; break;
-				case 'a': a = num; break;
+				//case 'a': a = num; break;
 				default : {
-					fprintf(stderr, "Incorrrect syntax.\n");
+					fprintf(stderr, "Incorrect syntax.\n");
 					exit(EXIT_FAILURE);
 				}
 			}
@@ -327,15 +349,13 @@ int main(int argc, char *argv[]) {
 	dirq->num_threads = d;
 	fileq->num_threads = f;
 
-	pthread_t dTID[d], fTID[f], aTID[a];
+	pthread_t dTID[d], fTID[f]; //aTID[a];
 	args->wfd_repo = wfdLL_init();
 
 	// Recursively search directories for files of given extension type and add to queue.
-	args->thread_id = 0;
 	for(i = 0; i < d; ++i) hpthread_create(&dTID[i], NULL, (void *) searchDIR, (void *)args);
 
 	// Calculate the word frequencies distribution (WFD) of all files.
-	args->thread_id = 0;
 	for(i = 0; i < f; ++i) hpthread_create(&fTID[i], NULL, (void *)findWFD, (void *)args);
 
 	// Wait for directory and file threads to finish before continuing to the next section.
@@ -346,15 +366,21 @@ int main(int argc, char *argv[]) {
 	for(i = 0; i < f; ++i) hpthread_join(fTID[i], (void **)&ptr);
 	if(*ptr) FILE_ERROR = 1;
 	free(ptr);
+	/*
+	// TODO Calculate the Jenson-Shannon distance (JSD) of all file pairs.
 
-	// Calculate the Jenson-Shannon distance (JSD) of all file pairs.
 	args->thread_id = 0;
-	for(i = 0; i < a; ++i) hpthread_create(&aTID[i], NULL, (void *)findJSD, (void *)args);
+	for(i = 0; i < a; ++i) {
+		args->thread_id = i;
+		hpthread_create(&aTID[i], NULL, (void *)findJSD, (void *)args);
+	}
+
 	// Wait for the Jenson-Shannon distance JSD threads to finish.
 	for(i = 0; i < a; ++i) hpthread_join(aTID[i], NULL);
+	 */
 
 	// Free Allocations and End Program.
-	free(args),free_queue(dirq), free_queue(fileq), free_wfdLL(args->wfd_repo), free(args->jsd_repo);
+	free(args),free_queue(dirq), free_queue(fileq), free_wfdLL(args->wfd_repo);
 	if(FILE_ERROR) exit(EXIT_FAILURE);
 	return EXIT_SUCCESS;
 }
