@@ -1,5 +1,6 @@
 CC := gcc
-FLAGS := -MP -MD -g -fsanitize=thread -Wall -Werror -std=c11
+CFLAGS := -fsanitize=thread -Wall -Werror -MP -MD -std=c11
+CPPFLAGS := -ggdb
 LIBS := -pthread -lm
 
 SOURCEDIR := src/code
@@ -16,10 +17,10 @@ dir:
 	mkdir -p $(BUILDDIR)
 
 $(BUILDDIR)/$(EXECUTABLE): $(OBJECTS)
-	$(CC) $(FLAGS) $^ -o $@ $(LIBS)
+	$(CC) $(CFLAGS) $^ -o $@ $(LIBS)
 
 $(OBJECTS): $(BUILDDIR)/%.o : $(SOURCEDIR)/%.c
-	$(CC) -c $< -o $@
+	$(CC) $(CPPFLAGS) -c $< -o $@
 
 clean:
 	rm -f $(BUILDDIR)/*.o $(BUILDDIR)/$(EXECUTABLE)
