@@ -54,10 +54,7 @@ wfdNode_t* add_wfdNode(wfd_t* wfd, char *word) {
 				prev->next = wfdNode;
 				wfdNode = prev;
 			}
-		} else {
-			++wfdNode->occurrences;
-			wfdNode = NULL;
-		}
+		} else ++wfdNode->occurrences;
 	}
 
 	++wfd->total_occurrences;

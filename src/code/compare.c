@@ -3,16 +3,22 @@
 #include <stdio.h>
 
 #include <sys/stat.h>
+#include <sys/prctl.h>
 
 #include "args.h"
 #include "errorh.h"
 
-
 #include <dirent.h>
 void* searchDIR(void *arg) {
-	if(DEBUG) setbuf(stdout, NULL);
-
 	args_t *args = arg;
+	int ID = args->dTHR_ID++;
+	if(DEBUG) {
+		setbuf(stdout, NULL);
+		char thr_name[16] = "searchDIR #";
+		sprintf(thr_name, "%s%d", thr_name, ID);
+		prctl(PR_SET_NAME, thr_name);
+	}
+
 	queue_t *fileq = args->fileq, *dirq = args->dirq;
 
 	int *FILE_ERROR = hmalloc(sizeof(int)), ret;
@@ -90,9 +96,15 @@ void* searchDIR(void *arg) {
 
 #include <fcntl.h>
 void* findWFD(void *arg) {
-	if(DEBUG) setbuf(stdout, NULL);
-
 	args_t *args = arg;
+	int ID = args->fTHR_ID++;
+
+	if(DEBUG) {
+		setbuf(stdout, NULL);
+		char thr_name[16] = "findWFD #";
+		sprintf(thr_name, "%s%d", thr_name, ID);
+		prctl(PR_SET_NAME, thr_name);
+	}
 
 	queue_t *dirq = args->dirq, *fileq = args->fileq;
 	wfdLL_t *wfd_repo = args->wfd_repo;
@@ -189,12 +201,19 @@ wfdNode_t* mean_wfd(wfdNode_t *wfdn1, wfdNode_t *wfdn2) {
 		}
 		else {                             // Both are not null.
 			int ret = strcmp(wfdn1->word, wfdn2->word);
-			if        (ret > 0) add_wfdNode(mean, wfdn1->word)->freq = 0.5*wfdn1->freq;
-			else if   (ret < 0) add_wfdNode(mean, wfdn1->word)->freq = 0.5*wfdn2->freq;
-			else                add_wfdNode(mean, wfdn1->word)->freq = 0.5*(wfdn1->freq+wfdn2->freq);
-
-			wfdn1 = wfdn1->next;
-			wfdn2 = wfdn2->next;
+			if(ret < 0) {
+				add_wfdNode(mean, wfdn1->word)->freq = 0.5*wfdn1->freq;
+				wfdn1 = wfdn1->next;
+			}
+			else if(ret > 0) {
+				add_wfdNode(mean, wfdn2->word)->freq = 0.5*wfdn2->freq;
+				wfdn2 = wfdn2->next;
+			}
+			else  {
+				add_wfdNode(mean, wfdn1->word)->freq = 0.5*(wfdn1->freq+wfdn2->freq);
+				wfdn1 = wfdn1->next;
+				wfdn2 = wfdn2->next;
+			}
 		}
 	}
 
@@ -208,15 +227,15 @@ wfdNode_t* mean_wfd(wfdNode_t *wfdn1, wfdNode_t *wfdn2) {
 #include <math.h>
 double findKLD(wfdNode_t *mean, wfdNode_t *wfdNode) {
 	double KLD = 0;
+	int ret;
 
 	while(wfdNode != NULL) {
 		// Don't have to check for strcmp > 0 because mean contains every entry in wfdNode.
-		if(strcmp(wfdNode->word, mean->word) < 0) wfdNode = wfdNode->next;
-		else {
-			KLD += 0.5*log2(wfdNode->freq/mean->freq);
+		if(strcmp(wfdNode->word, mean->word) == 0) {
+			KLD += wfdNode->freq*log2(wfdNode->freq/mean->freq);
 			wfdNode = wfdNode->next;
-			mean = mean->next;
 		}
+		mean = mean->next;
 	}
 
 	return KLD;
@@ -224,8 +243,17 @@ double findKLD(wfdNode_t *mean, wfdNode_t *wfdNode) {
 
 void* findJSD(void *arg) {
 	args_t *args = arg;
+	int ID = args->aTHR_ID++;
+
+	if(DEBUG) {
+		setbuf(stdout, NULL);
+		char thr_name[16] = "findJSD #";
+		sprintf(thr_name, "%s%d", thr_name, ID);
+		prctl(PR_SET_NAME, thr_name);
+	}
+
 	hpthread_mutex_lock(&args->lock);
-	int ID = args->thread_id;
+
 	hpthread_mutex_unlock(&args->lock);
 
 	double JSD;
@@ -233,16 +261,15 @@ void* findJSD(void *arg) {
 	wfdLL_t *wfd_repo = args->wfd_repo;
 	wfd_t *wfd1 = wfd_repo->head, *wfd2;
 
-	setbuf(stdout, NULL);
 	int i, j;
-	for(i = 0; i < wfd_repo->size && wfd1 != NULL; ++i) {
+	for(i = 0; i < wfd_repo->size; ++i) {
 		if(ID == i%args->a) {
 			wfd2 = wfd1->next;
-			for(j = i; j < wfd_repo->size && wfd2 != NULL; ++i) {
+			for(j = i+1; j < wfd_repo->size; ++j) {
 				wfdNode_t *mean = mean_wfd(wfd1->head, wfd2->head);
 
 				JSD = sqrt(0.5*findKLD(mean, wfd1->head)+0.5* findKLD(mean, wfd2->head));
-				printf("%lf %s %s", JSD, wfd1->file, wfd2->file);
+				fprintf(stdout, "%0.4lf %s %s", JSD, wfd1->file, wfd2->file);
 
 				wfd2 = wfd2->next;
 			}
@@ -324,6 +351,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	args->d = d, args->f = f, args->a = a;
+	args->aTHR_ID = args->dTHR_ID = args->aTHR_ID = 0;
 	pthread_t dTID[d], fTID[f], aTID[a];
 	args->wfd_repo = wfdLL_init();
 
@@ -347,10 +375,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	// Calculate the Jenson-Shannon distance (JSD) of all file pairs.
-	for(i = 0; i < a; ++i) {
-		args->thread_id = i;
-		hpthread_create(&aTID[i], NULL, (void *)findJSD, (void *)args);
-	}
+	for(i = 0; i < a; ++i) hpthread_create(&aTID[i], NULL, (void *)findJSD, (void *)args);
 
 	// Wait for the Jenson-Shannon distance JSD threads to finish.
 	for(i = 0; i < a; ++i) hpthread_join(aTID[i], NULL);

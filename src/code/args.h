@@ -6,7 +6,7 @@
 
 typedef struct args {
 	char *ext;
-	int d, f, a, thread_id;
+	int d, f, a, dTHR_ID, fTHR_ID, aTHR_ID;
 	queue_t *dirq, *fileq;
 	wfdLL_t *wfd_repo;
     pthread_mutex_t lock;

@@ -105,7 +105,7 @@ void hpthread_cond_broadcast(pthread_cond_t *cond) {
 }
 void hpthread_cond_timedwait(pthread_cond_t *restrict cond, pthread_mutex_t *restrict mutex, const struct timespec *restrict abstime) {
 	if(pthread_cond_timedwait(cond, mutex, abstime)) {
-		if(VERBOSE) perror("pthread_cond_timedwait");
+		if(DEBUG && VERBOSE) perror("pthread_cond_timedwait");
 		//exit(EXIT_FAILURE);
 	} // Doesn't seem like there's any errors worth checking here.
 }

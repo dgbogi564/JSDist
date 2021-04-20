@@ -6,7 +6,7 @@
 #endif
 
 #ifndef DEBUG
-#define DEBUG 1
+#define DEBUG 0
 #endif
 
 #ifndef VERBOSE
@@ -14,7 +14,7 @@
 #endif
 
 #ifndef MAX_WAIT_TIME_IN_SECONDS
-#define MAX_WAIT_TIME_IN_SECONDS (1)
+#define MAX_WAIT_TIME_IN_SECONDS (2)
 #endif
 
 #ifndef MAX_WAIT_TIME_IN_NANOSECONDS
