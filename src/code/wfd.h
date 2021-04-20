@@ -1,39 +1,45 @@
-#ifndef P2_WFD_H
-#define P2_WFD_H
+#ifndef P2_LLNODE_H
+#define P2_LLNODE_H
+
+#include <pthread.h>
+#include <stdlib.h>
+#include "compare.h"
 
 typedef struct wfdNode {
 	int occurrences;
 	double freq;
 	char *word;
 	struct wfdNode *next;
-} wfdn_t;
+} wfdNode_t;
 
 typedef struct wfd {
-	char *file;
 	int size, total_occurrences;
-	wfdn_t *head;
+	char *file;
+	wfdNode_t *head;
 	struct wfd *next;
 } wfd_t;
 
-#include <pthread.h>
-typedef struct wfdList {
+typedef struct wfdLinkedList {
 	int size;
+	wfd_t *head;
 	pthread_mutex_t lock;
-    wfd_t *head;
-} wfdl_t;
+} wfdLL_t;
 
-wfdn_t* wfdn_init(char *word);
+
+wfdNode_t* wfdNode_init(char *word);
 
 wfd_t* wfd_init(char *file);
 
-wfdl_t* wfdl_init();
+wfdLL_t*  wfdLL_init();
 
-void insert_wfdn(wfd_t *wfd, char *word);
+wfdNode_t* add_wfdNode(wfd_t* wfd, char *word);
 
-void insert_wfd(wfdl_t *wfdList, wfd_t *wfd);
+void insert_wfd(wfdLL_t *wfdLinkedList, wfd_t *wfd);
 
 void calculate_freq(wfd_t *wfd);
 
-void free_wfdl(wfdl_t *wfdList);
+void free_wfdNode(wfdNode_t *wfdNode);
+void free_wfd(wfd_t *wfd);
+void free_wfdLL(wfdLL_t *wfdLinkedList);
 
-#endif //P2_WFD_H
+#endif //P2_LLNODE_H

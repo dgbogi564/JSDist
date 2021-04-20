@@ -1,124 +1,109 @@
 #include "wfd.h"
+#include "errorh.h"
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
-#include <stdio.h>
-#include <stdlib.h>
-
-
-wfdn_t* wfdn_init(char *word) {
-	wfdn_t* wfdNode = (wfdn_t *)malloc(sizeof(wfdn_t));
-	if(wfdNode == NULL) {
-		perror("malloc");
-		exit(EXIT_FAILURE);
-	}
-	wfdNode->freq = -1;
-	wfdNode->next = NULL;
-	wfdNode->word = word;
+wfdNode_t* wfdNode_init(char *word) {
+	wfdNode_t *wfdNode = hmalloc(sizeof(wfdNode_t));
 	wfdNode->occurrences = 1;
-
+	wfdNode->freq = 0;
+	wfdNode->word = word;
+	wfdNode->next = NULL;
 	return wfdNode;
 }
 
 wfd_t* wfd_init(char *file) {
-	wfd_t *wfd = malloc(sizeof(wfd_t));
-	if(wfd == NULL) {
-		perror("malloc");
-		exit(EXIT_FAILURE);
-	}
-
-	wfd->head = NULL;
+	wfd_t *wfd = hmalloc(sizeof(wfd_t));
+	wfd->size = wfd->total_occurrences = 0;
 	wfd->file = file;
-	wfd->size = 0;
-
+	wfd->head = NULL;
+	wfd->next = NULL;
 	return wfd;
 }
 
-wfdl_t* wfdl_init() {
-	wfdl_t* wfdList = malloc(sizeof(wfdl_t));
-    if(wfdList == NULL) {
-        perror("malloc");
-        exit(EXIT_FAILURE);
-    }
-
-    wfdList->head = NULL;
-    wfdList->size = 0;
-	if(pthread_mutex_init(&wfdList->lock, NULL)) {
-		perror("pthread_mutex_init");
-		exit(EXIT_FAILURE);
-	}
-
-	return wfdList;
+wfdLL_t*  wfdLL_init() {
+	wfdLL_t *wfdLinkedList = hmalloc(sizeof(wfdLL_t));
+	wfdLinkedList->size = 0;
+	wfdLinkedList->lock = lock;
+	wfdLinkedList->head = NULL;
+	return wfdLinkedList;
 }
 
-#include <string.h>
-void insert_wfdn(wfd_t *wfd, char *word) {
-	wfd->total_occurrences++;
-	wfd->size++;
+wfdNode_t* add_wfdNode(wfd_t* wfd, char *word) {
+	wfdNode_t *wfdNode = NULL;
 
-	if(wfd->head == NULL) wfd->head = wfdn_init(word);
-	else {
-		wfdn_t *wfdNode = wfd->head;
-		wfdn_t *prev = NULL;
+	if(wfd->head == NULL) {
+		wfd->head = wfdNode_init(word);
+		wfd->size = 1;
+		wfdNode = wfd->head;
+	} else {
 		int ret;
-		while(wfdNode != NULL && (ret = strcmp(word, wfdNode->word)) > 0) {
+		wfdNode_t *prev = NULL;
+		wfdNode = wfd->head;
+		while(wfdNode != NULL && 0 < (ret = strcmp(word, wfdNode->word))) {
 			prev = wfdNode;
 			wfdNode = wfdNode->next;
 		}
 
-		if(!ret) wfdNode->occurrences++;
-		else {
+		if(ret) {
 			if(prev == NULL) {
 				prev = wfdNode;
-				wfd->head = wfdn_init(word);
+				wfd->head = wfdNode = wfdNode_init(word);
 				wfd->head->next = prev;
 			} else {
-				prev->next = wfdn_init(word);
-				prev->next->next = wfdNode;
+				prev = prev->next = wfdNode_init(word);
+				prev->next = wfdNode;
+				wfdNode = prev;
 			}
-		}
+		} else ++wfdNode->occurrences;
 	}
+
+	++wfd->total_occurrences;
+	return wfdNode;
 }
 
-void insert_wfd(wfdl_t *wfdList, wfd_t *wfd) {
-	wfdList->size++;
+void insert_wfd(wfdLL_t *wfdLinkedList, wfd_t *wfd) {
+	hpthread_mutex_lock(&lock);
+	wfd_t *wfdTemp;
 
-	if(wfdList->head == NULL) wfdList->head = wfd;
-	else {
-		wfd_t *wfdNode = wfdList->head;
-		while(wfdNode->next != NULL) wfdNode = wfdNode->next;
-		wfdNode->next = wfd;
+	if((wfdTemp = wfdLinkedList->head) == NULL) {
+		wfdLinkedList->head = wfd;
+	} else {
+		while(wfdTemp->next != NULL) wfdTemp = wfdTemp->next;
+		wfdTemp->next = wfd;
 	}
+	++wfdLinkedList->size;
+
+	hpthread_mutex_unlock(&lock);
 }
 
 void calculate_freq(wfd_t *wfd) {
-	wfdn_t *wfdNode = wfd->head;
+	wfdNode_t *wfdNode = wfd->head;
 	while(wfdNode != NULL) {
 		wfdNode->freq = (double)wfdNode->occurrences/(double)wfd->total_occurrences;
+		if(DEBUG) printf("%-18s %-18d %lf\n", wfdNode->word, wfdNode->occurrences, wfdNode->freq);
 		wfdNode = wfdNode->next;
 	}
 }
 
-void free_wfdl(wfdl_t *wfdList) {
-	wfd_t *wfd = wfdList->head;
-	wfd_t *temp;
-	wfdn_t *temp2;
-	while(wfd != NULL) {
-		wfdn_t *wfdNode = wfd->head;
-		while(wfdNode != NULL) {
-			temp2 = wfdNode->next;
-			free(wfdNode->word);
-			free(wfdNode);
-            wfdNode = temp2;
-		}
-		temp = wfd->next;
-		free(wfd);
-		wfd = temp;
+void free_wfdNode(wfdNode_t *wfdNode) {
+	wfdNode_t *temp;
+	while(wfdNode != NULL) {
+		temp = wfdNode->next;
+		free(wfdNode->word);
+		free(wfdNode);
+		wfdNode = temp;
 	}
-
-    if(pthread_mutex_destroy(&wfdList->lock)) {
-        perror("pthread_mutex_destroy");
-        exit(EXIT_FAILURE);
-    }
-
-	free(wfdList);
 }
-
+void free_wfd(wfd_t *wfd) {
+	free_wfdNode(wfd->head);
+	free(wfd);
+}
+void free_wfdLL(wfdLL_t *wfdLinkedList) {
+	hpthread_mutex_lock(&lock);
+	wfd_t *wfd = wfdLinkedList->head;
+	while(wfd != NULL) {
+		free_wfd(wfd);
+		wfd = wfd->next;
+	}
+	hpthread_mutex_unlock(&lock);
+}
