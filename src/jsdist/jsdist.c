@@ -45,21 +45,21 @@
 
 /* Word frequency */
 typedef struct word_ {
-    uint32_t occurrences;           /* Number of occurrences within file            */
-    double freq;                    /* Frequency of word within file                */
-    char *word;                     /* Word                                         */
-    struct word_ *next;             /* Pointer to next word frequency               */
+    uint32_t occurrences;           	/* Number of occurrences within file            */
+    double freq;                    	/* Frequency of word within file                */
+    char *word;                     	/* Word                                         */
+    struct word_ *next;             	/* Pointer to next word frequency               */
 } word_;
 
 /* Word frequency distribution */
 typedef struct wfd_ {
-    uint32_t size;                  /* Number of unique words within file           */
-    uint32_t total_occurrences;     /* Total occurrences within file                */
-    char *file_path;                /* File path                                    */
-    word_ *front;                   /* Pointer to first word frequency              */
-    word_ *rear;                    /* Pointer to last word frequency               */
-    struct wfd_ *next;              /* Pointer to next word frequency distribution  */
-    pthread_mutex_t lock;           /* Thread lock                                  */
+    uint32_t size;                  	/* Number of unique words within file           */
+    uint32_t total_occurrences;     	/* Total occurrences within file                */
+    char *file_path;                	/* File path                                    */
+    word_ *front;                   	/* Pointer to first word frequency              */
+    word_ *rear;                    	/* Pointer to last word frequency               */
+    struct wfd_ *next;              	/* Pointer to next word frequency distribution  */
+    pthread_mutex_t lock;           	/* Thread lock                                  */
 } wfd_;
 
 /* Word frequency distribution list */
