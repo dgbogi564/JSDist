@@ -56,8 +56,8 @@ typedef struct wfd_ {
     uint32_t size;                  /* Number of unique words within file           */
     uint32_t total_occurrences;     /* Total occurrences within file                */
     char *file_path;                /* File path                                    */
-    word_ *front;               /* Pointer to first word frequency              */
-    word_ *rear;                /* Pointer to last word frequency               */
+    word_ *front;                   /* Pointer to first word frequency              */
+    word_ *rear;                    /* Pointer to last word frequency               */
     struct wfd_ *next;              /* Pointer to next word frequency distribution  */
     pthread_mutex_t lock;           /* Thread lock                                  */
 } wfd_;
